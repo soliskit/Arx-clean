@@ -1,0 +1,39 @@
+# Xcode user settings
+xcuserdata/
+
+# Xcode build files
+*.hmap
+
+# App packages and debug symbols
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Swift Package Manager and local builds
+.build/
+
+# Local tools and generated qualification output
+node_modules/
+browser-evidence/
+arx-mac-*.png
+settings-*.json
+navigation-accessibility.txt
+navigation-elements.txt
+fixture-app.log
+effective-entitlements.plist
+*.xcresult/
+.DS_Store
+.tools/
+
+# Local native-test build products
+/.build-unit-tests/
+
+# Xcode-generated Swift package workspaces and schemes
+/.swiftpm/xcode/package.xcworkspace/
+/.swiftpm/xcode/xcshareddata/xcschemes/
+/swiftpm/xcode/package.xcworkspace/
+/swiftpm/xcode/xcshareddata/xcschemes/

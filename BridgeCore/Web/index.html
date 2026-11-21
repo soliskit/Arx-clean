@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Arx</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/logic.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">ARX BRIDGE</p>
+        <h1>Your shared reminders</h1>
+        <p>Only lists and actions granted in the Mac app are available here.</p>
+      </header>
+      <p id="status" role="status" aria-live="polite">Checking connection...</p>
+      <section id="pairing">
+        <h2>Pair this browser</h2>
+        <p>
+          Create a single-use secret in the Mac app. Enter it here privately.
+          Never put it in a chat or URL.
+        </p>
+        <form id="pair-form">
+          <label
+            >Pairing secret<input
+              id="secret"
+              type="password"
+              autocomplete="one-time-code"
+              required
+              maxlength="128" /></label
+          ><button type="submit">Pair browser</button>
+        </form>
+      </section>
+      <section id="workspace" hidden>
+        <div class="toolbar">
+          <h2>Selected lists</h2>
+          <button id="refresh" type="button">Refresh</button
+          ><button id="forget" type="button">Clear this page</button>
+        </div>
+        <p class="hint">
+          Refresh to see external changes. To end access, revoke this client in
+          the Mac app.
+        </p>
+        <div id="lists" class="lists"></div>
+        <h2 id="list-title">Choose a list</h2>
+        <button id="new" type="button" hidden>New reminder</button>
+        <div id="reminders"></div>
+        <nav id="pages" aria-label="Reminder pages" hidden>
+          <button id="previous" type="button">Previous page</button
+          ><button id="next" type="button">Next page</button>
+          <p>
+            Up to 100 reminders per page. Refresh starts from the beginning.
+          </p>
+        </nav>
+      </section>
+      <section id="editor" hidden>
+        <h2 id="edit-heading">Reminder</h2>
+        <form id="edit-form">
+          <label
+            >Title<input
+              type="text"
+              id="title"
+              required
+              maxlength="1024" /></label
+          ><label
+            >Notes<textarea id="notes" maxlength="32768"></textarea>
+          </label>
+          <div class="grid">
+            <label
+              >URL (http or https)<input
+                id="url"
+                type="url"
+                maxlength="2048" /></label
+            ><label
+              >Location label<input type="text" id="location" maxlength="1024"
+            /></label>
+          </div>
+          <label
+            >Priority<select id="priority">
+              <option value="0">None</option>
+              <option value="1">High (1)</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">Medium (5)</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">Low (9)</option>
+            </select></label
+          >
+          <div class="grid">
+            <label>Start date<input id="start-date" type="date" /></label
+            ><label
+              >Start time (optional)<input id="start-time" type="time" /></label
+            ><label>Due date<input id="due-date" type="date" /></label
+            ><label
+              >Due time (optional)<input id="due-time" type="time"
+            /></label>
+          </div>
+          <label
+            >Time zone for timed dates<input
+              type="text"
+              id="timezone"
+              placeholder="America/Los_Angeles"
+          /></label>
+          <details>
+            <summary>Alarms and repeat rules</summary>
+            <p>
+              Unchanged rules are preserved. Editing unsupported rules is
+              rejected, never silently simplified. Dates in alarm/repeat JSON
+              use ISO 8601.
+            </p>
+            <label
+              >Alarms JSON<textarea id="alarms" spellcheck="false"></textarea>
+            </label>
+            <p class="hint">
+              Examples: [{"relativeOffset":-900}] or
+              [{"absoluteDate":"2030-01-01T12:00:00Z"}]. Location alarm:
+              [{"latitude":37.7,"longitude":-122.4,"radius":100,"proximity":"enter","label":"Place"}].
+              Empty array removes alarms. Email and URL/file alarm actions are
+              not supported.
+            </p>
+            <label
+              >Repeat rules JSON<textarea
+                id="repeats"
+                spellcheck="false"
+              ></textarea>
+            </label>
+            <p class="hint">
+              Example:
+              [{"frequency":"weekly","interval":1,"daysOfWeek":[{"day":2,"week":0}]}].
+              Day 1 is Sunday. Optional: daysOfMonth, monthsOfYear, weeksOfYear,
+              daysOfYear, positions, count or endDate. Empty array removes
+              repeats.
+            </p>
+          </details>
+          <p id="advanced-warning" class="hint"></p>
+          <div class="toolbar">
+            <button id="save" type="submit">Save changes</button
+            ><button id="cancel-edit" type="button">Cancel</button>
+          </div>
+        </form>
+      </section>
+      <footer>Keep the Mac awake with Arx and your connector running.</footer>
+    </main>
+  </body>
+</html>

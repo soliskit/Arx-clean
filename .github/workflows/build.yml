@@ -1,0 +1,416 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Weekly run of the legs in this workflow: Saturday 7:20 AM Pacific year-round,
+  # daylight-saving safe via the schedule timezone key (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule).
+  # Minute 20 avoids the documented start-of-hour load peak for scheduled runs
+  # (https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+  schedule:
+    - cron: "20 7 * * 6"
+      timezone: "America/Los_Angeles"
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile-capture:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.2
+        run: |
+          if [ ! -d /Applications/Xcode_27.2.app ]; then
+            echo 'Xcode 27.2 is required but not present on this runner'
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version
+          if ! xcodebuild -version | grep -qFx 'Xcode 27.2'; then
+            echo 'the effective Xcode version is not 27.2'
+            exit 1
+          fi
+      - name: Capture the generated workspace lockfile
+        run: |
+          set -euo pipefail
+          ROOT=Package.resolved
+          WS=Arx.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          trap 'git checkout -- "$ROOT" "$WS" 2>/dev/null || true' EXIT
+          mkdir -p "$RUNNER_TEMP/capture"
+          cp "$ROOT" "$RUNNER_TEMP/capture/committed-root.resolved"
+          cp "$WS" "$RUNNER_TEMP/capture/committed-workspace.resolved"
+          {
+            echo "== toolchain =="
+            xcodebuild -version
+            swift --version
+            sw_vers
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          } | tee "$RUNNER_TEMP/capture/facts.txt"
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx -onlyUsePackageVersionsFromResolvedFile
+          if cmp -s "$ROOT" "$RUNNER_TEMP/capture/committed-root.resolved"; then
+            echo 'root byte-unchanged after pinned resolve'
+          else
+            echo 'ROOT CHANGED after pinned resolve'
+            exit 1
+          fi
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx
+          cp "$WS" "$RUNNER_TEMP/capture/generated-workspace.resolved"
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx
+          if cmp -s "$WS" "$RUNNER_TEMP/capture/generated-workspace.resolved"; then
+            echo 'repeat resolve byte-identical'
+          else
+            echo 'REPEAT RESOLVE DIFFERS'
+            exit 1
+          fi
+          git checkout -- "$WS"
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx
+          if cmp -s "$WS" "$RUNNER_TEMP/capture/generated-workspace.resolved"; then
+            echo 'restore-regenerate byte-identical'
+          else
+            echo 'RESTORE-REGENERATE DIFFERS'
+            exit 1
+          fi
+          python3 - <<'PYCAPTURE'
+          import hashlib, json, os
+          from pathlib import Path
+          TOOL = 'lefthook-plugin'
+          cap = Path(os.environ['RUNNER_TEMP']) / 'capture'
+          root = json.loads(Path('Package.resolved').read_text())
+          gen_bytes = (cap / 'generated-workspace.resolved').read_bytes()
+          gen = json.loads(gen_bytes)
+          def pins(doc):
+              return {p['identity']: p for p in doc['pins']}
+          root_pins, gen_pins = pins(root), pins(gen)
+          assert TOOL in root_pins, 'tool pin missing from root'
+          assert set(gen_pins) == set(root_pins) - {TOOL}, (
+              f'generated pins differ: missing {sorted(set(root_pins) - {TOOL} - set(gen_pins))}, '
+              f'unexpected {sorted(set(gen_pins) - set(root_pins))}')
+          altered = sorted(n for n in gen_pins if gen_pins[n] != root_pins[n])
+          assert not altered, f'pin records altered: {altered}'
+          assert 'originHash' in gen, 'generated file lost originHash'
+          assert gen.get('version') == root.get('version'), 'format version differs'
+          lines = [
+              f"generated pins: {len(gen_pins)} (root {len(root_pins)} minus tool pin {TOOL})",
+              f"generated originHash: {gen['originHash']}",
+              f"generated file sha256: {hashlib.sha256(gen_bytes).hexdigest()}",
+              f"generated file bytes: {len(gen_bytes)}",
+              f"tool pin in root: {root_pins[TOOL]['state']}",
+          ]
+          with open(cap / 'facts.txt', 'a') as f:
+              f.write('\n== generated workspace lockfile ==\n' + '\n'.join(lines) + '\n')
+          print('\n'.join(lines))
+          PYCAPTURE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arx-workspace-lockfile-capture
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/capture/generated-workspace.resolved
+            ${{ runner.temp }}/capture/facts.txt
+  # The Safari leg runs only when the code it covers changes; pushes,
+  # dispatches and the weekly run always run it.
+  changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      safari: ${{ steps.filter.outputs.safari }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "safari=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)"
+          printf 'Covered-path input:\n%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq '^(BridgeCore/|BridgeFixtureServer/|Package\.swift|Package\.resolved|scripts/browser-proof-safari\.mjs|scripts/browser-outcomes\.mjs|scripts/browser-edits\.mjs|scripts/check-listener-exclusivity\.sh|^package\.json$|^\.github/workflows/build\.yml$)'; then
+            echo "safari=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "safari=false" >> "$GITHUB_OUTPUT"
+          fi
+  build:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.2
+        run: |
+          if [ ! -d /Applications/Xcode_27.2.app ]; then
+            echo 'Xcode 27.2 is required but not present on this runner'
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version
+          if ! xcodebuild -version | grep -qFx 'Xcode 27.2'; then
+            echo 'the effective Xcode version is not 27.2'
+            exit 1
+          fi
+      - name: Resolve the pinned Xcode dependency graph
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx -onlyUsePackageVersionsFromResolvedFile
+          # Let Xcode maintain the workspace lockfile into the workspace graph's own
+          # form (this prunes the developer-tool pin, which the pinned resolve keeps).
+          xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx
+          python3 - <<'PYTHON'
+          import json
+          import subprocess
+          from pathlib import Path
+          TOOL_PIN = 'lefthook-plugin'
+          WORKSPACE = 'Arx.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+          committed_root = json.loads(subprocess.run(
+              ['git', 'show', 'HEAD:Package.resolved'],
+              check=True, capture_output=True, text=True).stdout)
+          root = json.loads(Path('Package.resolved').read_text())
+          app = json.loads(Path(WORKSPACE).read_text())
+          def pins(doc):
+              return {p['identity']: p for p in doc['pins']}
+          # The pinned resolution must leave the approved root lockfile exact:
+          # same complete pin records (kind, location, revision, version, branch)
+          # and the same originHash.
+          assert root == committed_root, 'root lockfile changed during the pinned resolution'
+          root_pins = pins(root)
+          app_pins = pins(app)
+          # The Xcode workspace graph covers the app and its runtime packages only,
+          # so its lockfile is exactly the approved root pin set minus the one named
+          # developer-tool pin (clean-Mac probe evidence: run 44246476672). No other
+          # pin may be missing, added or altered.
+          assert TOOL_PIN in root_pins, f'expected tool pin {TOOL_PIN} missing from the root lockfile'
+          expected = set(root_pins) - {TOOL_PIN}
+          assert set(app_pins) == expected, (
+              f'workspace pins differ: missing {sorted(expected - set(app_pins))}, '
+              f'unexpected {sorted(set(app_pins) - expected)}')
+          altered = sorted(name for name in expected if app_pins[name] != root_pins[name])
+          assert not altered, f'workspace pins altered vs the approved root pins: {altered}'
+          # originHash is graph metadata: the workspace graph legitimately hashes to
+          # a different value than the root graph, so its value is the one documented
+          # exclusion (not blanket drift acceptance). Presence and format version are
+          # still required.
+          assert 'originHash' in app, 'workspace lockfile lost its originHash'
+          assert app.get('version') == root.get('version'), 'workspace lockfile format version differs'
+          print(f'root lockfile exact; workspace pins match the approved root set minus tool pin {TOOL_PIN}')
+          PYTHON
+          # The tracked lockfiles must already be what resolution produces: after the
+          # pinned and plain resolves, neither file may show any change.
+          git diff --exit-code -- Package.resolved Arx.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+      - name: Verify Mac-only target settings
+        run: |
+          set -euo pipefail
+          for CONFIG in Debug Release; do
+            for TARGET in Arx ArxTests ArxUITests; do
+              xcodebuild -project Arx.xcodeproj -target "$TARGET" -configuration "$CONFIG" -showBuildSettings -json > "settings-$TARGET-$CONFIG.json"
+            done
+          done
+          python3 - <<'PYTHON'
+          import json
+          import re
+          from pathlib import Path
+          for config in ('Debug', 'Release'):
+              for target in ('Arx', 'ArxTests', 'ArxUITests'):
+                  rows = json.loads(Path(f'settings-{target}-{config}.json').read_text())
+                  assert isinstance(rows, list) and len(rows) == 1, f'{target}/{config}: missing or extra records'
+                  assert rows[0].get('target') == target, f'{target}/{config}: wrong target'
+                  settings = rows[0]['buildSettings']
+                  assert settings.get('SUPPORTED_PLATFORMS', '').split() == ['macosx'], f'{target}/{config}: not Mac-only'
+                  assert not settings.get('TARGETED_DEVICE_FAMILY', '').strip(), f'{target}/{config}: mobile device family remains'
+                  sdk = settings.get('SDKROOT', '')
+                  assert sdk == 'macosx' or re.fullmatch(r'.*/MacOSX(?:[0-9.]+)?\.sdk', sdk), f'{target}/{config}: not a Mac SDK'
+                  assert settings.get('MACOSX_DEPLOYMENT_TARGET') == '27.2', f'{target}/{config}: project minimum changed'
+                  print(target, config, 'SUPPORTED_PLATFORMS=' + settings['SUPPORTED_PLATFORMS'], 'SDKROOT=' + settings.get('SDKROOT', ''))
+          PYTHON
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+      - name: Check all authored non-Swift files
+        run: |
+          npm ci --ignore-scripts
+          bash scripts/install-linters.sh
+          npm run lint
+      - name: Lint the Swift sources
+        run: swift format lint --strict --recursive BridgeCore BridgeCoreTests BridgeFixtureServer Arx ArxTests ArxUITests Package.swift scripts/fixture-display.swift
+      - name: Run bridge package tests
+        run: |
+          swift test --parallel
+          bash scripts/check-listener-exclusivity.sh .build/debug/BridgeFixtureServer
+      - name: Verify browser script syntax
+        run: |
+          node --check BridgeCore/Web/app.js
+          node --check BridgeCore/Web/logic.js
+          node --check scripts/browser-proof.mjs
+      - name: Build for macOS
+        run: xcodebuild build -project Arx.xcodeproj -scheme Arx -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO -derivedDataPath .build
+      - name: Verify effective signed entitlements
+        run: |
+          set -euo pipefail
+          APP=.build/Build/Products/Debug/Arx.app
+          codesign --force --sign - --options runtime --entitlements Arx/Arx.entitlements "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -d --entitlements :- "$APP" > effective-entitlements.plist
+          python3 - <<'PYTHON'
+          import plistlib
+          from pathlib import Path
+          expected = plistlib.loads(Path('Arx/Arx.entitlements').read_bytes())
+          actual = plistlib.loads(Path('effective-entitlements.plist').read_bytes())
+          assert actual == expected, (actual, expected)
+          assert actual.get('com.apple.security.app-sandbox') is True
+          assert actual.get('com.apple.security.network.server') is True
+          assert actual.get('com.apple.security.personal-information.calendars') is True
+          PYTHON
+      - name: Run the Mac navigation tests
+        run: xcodebuild test -project Arx.xcodeproj -scheme Arx -destination 'platform=macOS' -only-testing:ArxTests CODE_SIGNING_ALLOWED=NO MACOSX_DEPLOYMENT_TARGET=27.0 -derivedDataPath .build-unit-tests -resultBundlePath navigation-tests.xcresult
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arx-mac-only-settings
+          path: settings-*.json
+
+  mac-screenshot:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.2
+        run: |
+          if [ ! -d /Applications/Xcode_27.2.app ]; then
+            echo 'Xcode 27.2 is required but not present on this runner'
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          xcodebuild -version
+          if ! xcodebuild -version | grep -qFx 'Xcode 27.2'; then
+            echo 'the effective Xcode version is not 27.2'
+            exit 1
+          fi
+      - name: Compile and safely probe the fixture display script
+        run: |
+          set -euo pipefail
+          swiftc -typecheck scripts/fixture-display.swift
+          status=0
+          CI=false swift scripts/fixture-display.swift scripts/capture-mac.sh > "$RUNNER_TEMP/fixture-display-probe.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/fixture-display-probe.log"
+          test "$status" -eq 1
+          grep -Fq 'Display setup is restricted to CI.' "$RUNNER_TEMP/fixture-display-probe.log"
+      - name: Resolve the pinned Xcode dependency graph
+        run: xcodebuild -resolvePackageDependencies -project Arx.xcodeproj -scheme Arx -onlyUsePackageVersionsFromResolvedFile
+      - name: Build the app
+        run: xcodebuild build -project Arx.xcodeproj -scheme Arx -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO -derivedDataPath .build
+      - name: Launch and capture fixture control panel
+        run: bash scripts/capture-mac.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arx-mac
+          path: |
+            arx-mac-*.png
+            navigation-accessibility.txt
+            navigation-elements.txt
+
+  browser-proof:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Swift toolchain
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 -o "$RUNNER_TEMP/swift.tar.gz" https://download.swift.org/swift-6.4.1-release/ubuntu2204/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-ubuntu22.04.tar.gz
+          echo "e9ec2ff05ac0fc89bf2e7cecdee5da4d398898a768d7ee2b86a59d2a7f01c44b  $RUNNER_TEMP/swift.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/swift.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/swift-6.4.1-RELEASE-ubuntu22.04/usr/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+      - name: Build fixture server and run Linux package tests
+        run: |
+          swift build --product BridgeFixtureServer --jobs 2
+          swift test --jobs 2 --parallel
+      - name: Locate browser and run HTTPS fixture proof
+        run: |
+          CHROME_PATH="$(command -v google-chrome || command -v chromium)"
+          export CHROME_PATH
+          test -n "$CHROME_PATH"
+          bash scripts/check-listener-exclusivity.sh .build/debug/BridgeFixtureServer
+          node --test scripts/browser-startup.test.mjs
+          node --test scripts/web-logic.test.mjs
+          node scripts/browser-proof.mjs .build/debug/BridgeFixtureServer browser-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arx-browser-fixtures
+          path: browser-evidence/
+
+  safari-proof:
+    needs: changes
+    if: needs.changes.outputs.safari == 'true'
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.2
+        run: |
+          if [ -d /Applications/Xcode_27.2.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+      - name: Enable Safari WebDriver and map the fixture host
+        run: |
+          set -euo pipefail
+          sudo safaridriver --enable
+          echo "127.0.0.1 bridge.example.test" | sudo tee -a /etc/hosts
+      - name: Build the fixture server
+        run: swift build --product BridgeFixtureServer --jobs 2
+      - name: Run the Safari fixture proof
+        run: |
+          bash scripts/check-listener-exclusivity.sh .build/debug/BridgeFixtureServer
+          node scripts/browser-proof-safari.mjs .build/debug/BridgeFixtureServer safari-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arx-safari-fixtures
+          path: safari-evidence/
+
+  # Merge gate for the gated leg: passes when the leg either ran green or was
+  # legitimately skipped because its covered code did not change. A leg that
+  # ran and failed or was cancelled, or a coverage gate that could not decide,
+  # fails this check.
+  slow-legs:
+    if: always()
+    needs: [changes, safari-proof]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Aggregate the gated legs
+        env:
+          GATE_SAFARI: ${{ needs.changes.outputs.safari }}
+          SAFARI_RESULT: ${{ needs.safari-proof.result }}
+        run: |
+          set -euo pipefail
+          check() {
+            local gate="$1" result="$2" name="$3"
+            if [ -z "$gate" ]; then
+              echo "::error::coverage gate for $name could not decide (changes job did not report)"
+              return 1
+            fi
+            if [ "$gate" = "true" ]; then
+              if [ "$result" != "success" ]; then
+                echo "::error::$name covered changed code and ended $result"
+                return 1
+              fi
+              echo "$name ran and passed."
+            else
+              if [ "$result" != "skipped" ] && [ "$result" != "success" ]; then
+                echo "::error::$name did not cover changed code but ended $result instead of skipping"
+                return 1
+              fi
+              echo "$name skipped: covered code unchanged."
+            fi
+          }
+          check "$GATE_SAFARI" "$SAFARI_RESULT" "safari-proof"

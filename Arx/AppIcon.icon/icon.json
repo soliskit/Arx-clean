@@ -1,0 +1,48 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : {
+        "linear-gradient" : [
+          "display-p3:0.18492,0.16932,0.37477,1.00000",
+          "display-p3:0.05686,0.04748,0.15400,1.00000"
+        ]
+      }
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "display-p3:0.91120,0.91739,0.93898,1.00000"
+          },
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "rows-back.svg",
+          "name" : "rows-back",
+          "opacity" : 1
+        },
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.32128,0.53825,0.96858,1.00000",
+              "display-p3:0.16642,0.39364,0.77321,1.00000"
+            ]
+          },
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "row-selected.svg",
+          "name" : "row-selected",
+          "opacity" : 1
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "Rows"
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

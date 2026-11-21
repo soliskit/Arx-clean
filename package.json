@@ -1,0 +1,25 @@
+{
+  "name": "arx-checks",
+  "private": true,
+  "engines": {
+    "node": "26.13.0"
+  },
+  "scripts": {
+    "lint:js": "eslint BridgeCore/Web/app.js BridgeCore/Web/logic.js scripts/*.mjs eslint.config.mjs",
+    "lint:css": "stylelint BridgeCore/Web/style.css",
+    "lint:html": "html-validate BridgeCore/Web/index.html",
+    "format:check": "prettier --check BridgeCore/Web scripts/*.mjs eslint.config.mjs package.json lefthook.yml .github/workflows/build.yml .github/actionlint.yaml .stylelintrc.json .htmlvalidate.json",
+    "lint": "node -e \"if (process.versions.node !== require('./package.json').engines.node) { throw Error('Use the pinned Node version'); }\" && npm run lint:js && npm run lint:css && npm run lint:html && npm run lint:shell && npm run lint:workflow && npm run format:check",
+    "lint:shell": ".tools/bin/shellcheck scripts/*.sh",
+    "lint:workflow": "PATH=\"$PWD/.tools/bin:$PATH\" .tools/bin/actionlint"
+  },
+  "devDependencies": {
+    "eslint": "10.15.0",
+    "@eslint/js": "10.0.1",
+    "globals": "17.14.0",
+    "prettier": "3.10.1",
+    "stylelint": "18.0.0",
+    "stylelint-config-standard": "41.0.0",
+    "html-validate": "11.21.1"
+  }
+}
