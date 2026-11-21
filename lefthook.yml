@@ -6,3 +6,14 @@ pre-commit:
       run: swift format lint --strict -- {staged_files}
     non-swift:
       run: npm run lint
+
+# Exact commit metadata checks, alongside existing checks.
+commit-msg:
+  commands:
+    credit-message:
+      run: python3 "$(git rev-parse --git-path credit-guard/entry.py)" commit-msg {1}
+pre-push:
+  commands:
+    credit-objects:
+      use_stdin: true
+      run: python3 "$(git rev-parse --git-path credit-guard/entry.py)" pre-push
